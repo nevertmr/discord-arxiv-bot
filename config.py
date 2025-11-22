@@ -1,5 +1,7 @@
 """설정 파일 - 환경 변수 로드 및 관리"""
+
 import os
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -14,7 +16,7 @@ for category in ['CS_AI', 'CS_LG', 'CS_CV', 'CS_CL', 'CS_NE', 'CS_CR']:
     if channel_id:
         # CS_AI -> cs.AI 형식으로 변환
         parts = category.split('_')  # ['CS', 'AI']
-        category_key = f"{parts[0].lower()}.{parts[1]}"  # cs.AI
+        category_key = f'{parts[0].lower()}.{parts[1]}'  # cs.AI
         CHANNEL_MAPPING[category_key] = int(channel_id)
 
 # arXiv 설정
