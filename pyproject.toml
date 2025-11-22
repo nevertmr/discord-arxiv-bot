@@ -1,0 +1,13 @@
+[project]
+name = "discord-arxiv-bot"
+version = "1.0.0"
+description = "arXiv 논문 자동 알림 Discord 봇"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "discord.py",
+    "python-dotenv",
+    "arxiv",
+    "openai",
+    "pydantic",
+]

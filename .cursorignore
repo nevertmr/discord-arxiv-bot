@@ -1,0 +1,14 @@
+
+# Python 캐시
+__pycache__/
+*.pyc
+
+# 가상환경
+.venv/
+venv/
+env/
+
+# uv lock
+uv.lock
+
+
