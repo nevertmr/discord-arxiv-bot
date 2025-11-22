@@ -64,21 +64,4 @@ VLLM_MODEL=/models/gpt-oss-120b
 CHECK_INTERVAL_MINUTES=1
 ```
 
-## 개발
 
-```bash
-# 코드 품질 체크
-./lint.sh
-
-# 또는 개별 실행
-uv run ruff check --fix .
-uv run ruff format .
-```
-
-## 기술
-
-Python 3.9+, discord.py, arxiv, openai (vLLM), pydantic, ruff
-
-## 라이선스
-
-MIT
