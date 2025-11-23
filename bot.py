@@ -65,6 +65,7 @@ def create_bot(target_date, date_str):
 
     fetcher_service = FetcherService(arxiv_client=arxiv_client, queue_manager=queue_manager)
     processor_service = ProcessorService(
+        arxiv_client=arxiv_client,
         vllm_client=vllm_client,
         discord_client=discord_client,
         queue_manager=queue_manager,

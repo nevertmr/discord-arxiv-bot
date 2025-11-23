@@ -28,22 +28,15 @@ class QueueManager:
         date_dir.mkdir(parents=True, exist_ok=True)
         return date_dir
 
-    def add_pending(self, paper: Paper, content: str, content_type: str, date_str: str) -> bool:
-        """대기 큐에 논문 추가 (메타데이터 + 콘텐츠)"""
+    def add_pending(self, paper: Paper, date_str: str) -> bool:
+        """대기 큐에 논문 메타데이터 추가"""
         try:
             date_dir = self._get_date_dir(self.pending_dir, date_str)
 
-            # 메타데이터 저장 (content_type 포함)
+            # 메타데이터만 저장 (HTML은 처리 시 다운로드)
             json_file = date_dir / f'{paper.arxiv_id}.json'
-            paper_data = paper.to_dict()
-            paper_data['content_type'] = content_type
             with open(json_file, 'w', encoding='utf-8') as f:
-                json.dump(paper_data, f, ensure_ascii=False, indent=2)
-
-            # 콘텐츠 저장 (HTML 또는 Abstract)
-            content_file = date_dir / f'{paper.arxiv_id}.txt'
-            with open(content_file, 'w', encoding='utf-8') as f:
-                f.write(content)
+                json.dump(paper.to_dict(), f, ensure_ascii=False, indent=2)
 
             self.logger.info(f'pending 추가: {paper.arxiv_id}')
             return True
@@ -51,34 +44,23 @@ class QueueManager:
             self.logger.error(f'pending 추가 실패: {e}')
             return False
 
-    def get_pending_papers(self, date_str: str) -> list[tuple[Paper, str, str]]:
-        """해당 날짜의 대기 중인 논문 목록 (Paper, content, content_type)"""
+    def get_pending_papers(self, date_str: str) -> list[Paper]:
+        """해당 날짜의 대기 중인 논문 목록 (메타데이터만)"""
         date_dir = self._get_date_dir(self.pending_dir, date_str)
-        papers_with_content = []
+        papers = []
 
         for json_file in sorted(date_dir.glob('*.json')):
             try:
                 # 메타데이터 읽기
                 with open(json_file, encoding='utf-8') as f:
                     data = json.load(f)
-                content_type = data.pop('content_type', 'html')  # 기본값 html
                 paper = Paper.from_dict(data)
-
-                # 콘텐츠 읽기
-                content_file = date_dir / f'{paper.arxiv_id}.txt'
-                if not content_file.exists():
-                    self.logger.warning(f'콘텐츠 파일 없음: {paper.arxiv_id}')
-                    continue
-
-                with open(content_file, encoding='utf-8') as f:
-                    content = f.read()
-
-                papers_with_content.append((paper, content, content_type))
+                papers.append(paper)
             except Exception as e:
                 self.logger.error(f'pending 읽기 실패: {json_file.name}, {e}')
                 continue
 
-        return papers_with_content
+        return papers
 
     def complete_processing(self, paper: Paper, content: str, content_type: str, analysis: Analysis, date_str: str):
         """논문 처리 완료: completed에 저장, pending 삭제"""
@@ -97,7 +79,7 @@ class QueueManager:
             with open(json_file, 'w', encoding='utf-8') as f:
                 json.dump(completed_data, f, ensure_ascii=False, indent=2)
 
-            # 콘텐츠 저장
+            # 콘텐츠 저장 (HTML 원문 또는 Abstract)
             content_file = completed_date_dir / f'{paper.arxiv_id}.txt'
             with open(content_file, 'w', encoding='utf-8') as f:
                 f.write(content)
@@ -105,7 +87,6 @@ class QueueManager:
             # pending 파일 삭제
             pending_date_dir = self._get_date_dir(self.pending_dir, date_str)
             (pending_date_dir / f'{paper.arxiv_id}.json').unlink(missing_ok=True)
-            (pending_date_dir / f'{paper.arxiv_id}.txt').unlink(missing_ok=True)
 
             self.logger.info(f'완료 저장: {paper.arxiv_id}')
         except Exception as e:
