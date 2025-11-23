@@ -26,7 +26,7 @@ class DiscordClient:
             'cs.CR': 0xE67E22,  # 진한 주황색 (Cryptography)
         }
 
-    async def send_paper_notification(self, paper: Paper, analysis: Analysis) -> bool:
+    async def send_paper_notification(self, paper: Paper, analysis: Analysis, content_type: str = 'html') -> bool:
         """논문 알림 발송"""
         # 발송할 카테고리 결정: primary 우선, 없으면 secondary 확인
         target_category = self._determine_target_category(paper)
@@ -43,8 +43,8 @@ class DiscordClient:
             self.logger.error(f'채널을 찾을 수 없음: {channel_id} ({target_category})')
             return False
 
-        # Embed 생성 시 실제 발송 카테고리 사용
-        embed = self._create_embed(paper, analysis, target_category)
+        # Embed 생성 시 실제 발송 카테고리 및 content_type 사용
+        embed = self._create_embed(paper, analysis, target_category, content_type)
 
         try:
             await channel.send(embed=embed)
@@ -76,7 +76,9 @@ class DiscordClient:
         # 3. 매칭되는 카테고리가 없음
         return None
 
-    def _create_embed(self, paper: Paper, analysis: Analysis, target_category: str = None) -> discord.Embed:
+    def _create_embed(
+        self, paper: Paper, analysis: Analysis, target_category: str = None, content_type: str = 'html'
+    ) -> discord.Embed:
         """Discord Embed 생성"""
         # 표시할 카테고리 (발송 카테고리 또는 primary)
         display_category = target_category or paper.primary_category
@@ -108,6 +110,10 @@ class DiscordClient:
         analysis_text += f'**기술/방법론**\n{analysis.methodology}\n\n'
         analysis_text += f'**연구 맥락**\n{analysis.context}\n\n'
         analysis_text += f'**기여**\n{analysis.contribution}'
+
+        # Abstract 기반 분석인 경우 안내 메시지 추가
+        if content_type == 'abstract':
+            analysis_text += '\n\n_ℹ️ 해당 논문은 전문 HTML을 제공하지 않아 Abstract 기반으로 정리되었습니다._'
 
         # 2000자 제한 체크
         if len(analysis_text) > 1024:

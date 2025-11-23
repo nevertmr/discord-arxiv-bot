@@ -18,110 +18,121 @@ class ProcessorService:
         discord_client: DiscordClient,
         queue_manager: QueueManager,
         max_retries: int = 3,
-        consecutive_failure_limit: int = 3,
     ):
         self.vllm_client = vllm_client
         self.discord_client = discord_client
         self.queue_manager = queue_manager
         self.max_retries = max_retries
-        self.consecutive_failure_limit = consecutive_failure_limit
         self.logger = logging.getLogger('ProcessorService')
 
-        self.consecutive_failures = 0
-        self.is_running = False
+    async def process_all_for_date(self, date_str: str):
+        """해당 날짜의 모든 논문 처리"""
+        papers_with_content = self.queue_manager.get_pending_papers(date_str)
+        total = len(papers_with_content)
 
-    async def process_queue(self):
-        """큐를 계속 처리하는 메인 루프"""
-        self.is_running = True
-        self.consecutive_failures = 0
+        if total == 0:
+            self.logger.info(f'{date_str}: 처리할 논문 없음')
+            print(f'\n{"=" * 80}')
+            print(f'{date_str}: 처리할 논문이 없습니다.')
+            print(f'{"=" * 80}\n')
+            return
 
-        self.logger.info('Processor 시작')
-
-        while self.is_running:
-            try:
-                # 다음 논문 가져오기
-                paper = self.queue_manager.get_next_pending()
-
-                if not paper:
-                    # 큐가 비어있으면 대기
-                    await asyncio.sleep(5)
-                    continue
-
-                # 처리 시작
-                success = await self._process_single_paper(paper)
-
-                if success:
-                    self.consecutive_failures = 0
-                else:
-                    self.consecutive_failures += 1
-
-                    if self.consecutive_failures >= self.consecutive_failure_limit:
-                        self.logger.critical(f'{self.consecutive_failure_limit}개 논문 연속 실패 - Processor 종료')
-                        print(f'\n❌ {self.consecutive_failure_limit}개 논문 연속 실패')
-                        print('vLLM 서버에 문제가 있을 수 있습니다. 봇을 종료합니다.\n')
-                        raise RuntimeError('연속 실패 제한 초과')
-
-                # 다음 논문 처리 전 짧은 대기
-                await asyncio.sleep(1)
-
-            except asyncio.CancelledError:
-                self.logger.info('Processor 취소됨')
-                break
-            except Exception as e:
-                self.logger.error(f'Processor 에러: {e}')
-                raise
-
-    async def _process_single_paper(self, paper: Paper) -> bool:
-        """단일 논문 처리"""
-        # 오늘 몇 번째 논문인지 확인
-        today_count = self.queue_manager.get_today_completed_count() + 1
-
-        self.logger.info(f'처리 시작 [{today_count}번째]: {paper.arxiv_id} ({paper.primary_category})')
+        self.logger.info(f'{date_str}: {total}개 논문 처리 시작')
         print(f'\n{"=" * 80}')
-        print(f'📄 오늘 {today_count}번째 논문 처리 중')
-        print(f'{"=" * 80}')
-        print(f'ID: {paper.arxiv_id}')
-        print(f'제목: {paper.title}')
-        print(f'카테고리: {paper.primary_category}')
+        print(f'📋 {total}개 논문 처리 시작')
         print(f'{"=" * 80}\n')
 
-        # processing으로 표시
-        self.queue_manager.start_processing(paper)
+        success_count = 0
+        failed_papers = []
+
+        for idx, (paper, content, content_type) in enumerate(papers_with_content, 1):
+            success = await self._process_single_paper(paper, content, content_type, date_str, idx, total)
+            if success:
+                success_count += 1
+            else:
+                failed_papers.append(paper.arxiv_id)
+
+        # 최종 결과
+        print(f'\n{"=" * 80}')
+        print('=== 완료 ===')
+        print(f'총 처리: {total}개')
+        print(f'성공: {success_count}개')
+        if failed_papers:
+            print(f'실패: {len(failed_papers)}개')
+            print(f'실패 논문: {", ".join(failed_papers)}')
+        print(f'{"=" * 80}\n')
+
+        self.logger.info(f'처리 완료 - 성공: {success_count}/{total}')
+
+    async def _process_single_paper(
+        self, paper: Paper, content: str, content_type: str, date_str: str, idx: int, total: int
+    ) -> bool:
+        """단일 논문 처리"""
+        self.logger.info(f'처리 시작 [{idx}/{total}]: {paper.full_id}')
+
+        content_label = 'HTML' if content_type == 'html' else 'Abstract'
+        print(f'\n{"=" * 80}')
+        print(f'[{idx:02d}/{total:02d}] {paper.full_id}')
+        print(f'  - {paper.html_url}')
+        print(f'  - 제목: {paper.title}')
+        print(f'  - 카테고리: {paper.primary_category}')
+        print(f'{"=" * 80}')
+        print(f'  - {content_label} 로드 완료')
 
         # vLLM으로 분석 (재시도 로직)
+        analysis = None
         for attempt in range(1, self.max_retries + 1):
             try:
-                self.logger.info(f'vLLM 시도 {attempt}/{self.max_retries}')
+                self.logger.info(f'vLLM 시도 {attempt}/{self.max_retries}: {paper.arxiv_id}')
+                print(f'  - vLLM 분석 중... (시도 {attempt}/{self.max_retries})')
+
                 # Discord heartbeat 블로킹 방지
-                analysis = await asyncio.to_thread(self.vllm_client.analyze_paper, paper)
-
-                # Discord 발송
-                success = await self.discord_client.send_paper_notification(paper, analysis)
-
-                if success:
-                    # 완료 처리
-                    self.queue_manager.complete_processing(paper, analysis)
-                    self.logger.info(f'처리 완료 [{today_count}번째]: {paper.arxiv_id}')
-                    return True
-                else:
-                    self.logger.warning(f'Discord 발송 실패: {paper.arxiv_id}')
-                    return False
+                analysis = await asyncio.to_thread(self.vllm_client.analyze_paper, paper, content, content_type)
+                break
 
             except Exception as e:
                 self.logger.error(f'vLLM 에러 (시도 {attempt}/{self.max_retries}): {e}')
+                print(f'  - vLLM 에러: {e}')
 
                 if attempt < self.max_retries:
                     self.logger.info('재시도 대기 중... (5초)')
+                    print('  - 5초 후 재시도...')
                     await asyncio.sleep(5)
                 else:
                     self.logger.error(f'논문 처리 실패 (최대 재시도 초과): {paper.arxiv_id}')
-                    # processing → pending 복구
-                    self.queue_manager.restore_processing_to_pending()
-                    return False
+                    print('  - ❌ 처리 실패: 최대 재시도 초과')
+                    print('\n프로그램을 종료합니다.\n')
+                    raise RuntimeError(f'vLLM 분석 실패 (3회 시도): {paper.arxiv_id}') from e
+
+        if not analysis:
+            return False
+
+        # Discord 발송 (재시도)
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                print(f'  - Discord 발송 중... (시도 {attempt}/{self.max_retries})')
+                success = await self.discord_client.send_paper_notification(paper, analysis, content_type)
+
+                if success:
+                    # 완료 처리
+                    self.queue_manager.complete_processing(paper, content, content_type, analysis, date_str)
+                    self.logger.info(f'처리 완료 [{idx}/{total}]: {paper.arxiv_id}')
+                    print(f'  - ✓ Discord 발송 완료 ({paper.primary_category})')
+                    return True
+                else:
+                    raise RuntimeError('Discord 발송 실패')
+
+            except Exception as e:
+                self.logger.error(f'Discord 발송 에러 (시도 {attempt}/{self.max_retries}): {e}')
+                print(f'  - Discord 에러: {e}')
+
+                if attempt < self.max_retries:
+                    print('  - 5초 후 재시도...')
+                    await asyncio.sleep(5)
+                else:
+                    self.logger.error(f'Discord 발송 실패 (최대 재시도 초과): {paper.arxiv_id}')
+                    print('  - ❌ Discord 발송 실패: 최대 재시도 초과')
+                    print('\n프로그램을 종료합니다.\n')
+                    raise RuntimeError(f'Discord 발송 실패 (3회 시도): {paper.arxiv_id}') from e
 
         return False
-
-    def stop(self):
-        """Processor 중지"""
-        self.is_running = False
-        self.logger.info('Processor 중지 요청됨')

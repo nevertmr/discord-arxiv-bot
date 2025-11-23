@@ -9,7 +9,7 @@ from models.paper import Paper
 
 
 class FetcherService:
-    """arXiv에서 논문을 가져와서 큐에 추가하는 서비스"""
+    """arXiv에서 특정 날짜 논문을 가져와서 큐에 추가하는 서비스"""
 
     def __init__(self, arxiv_client: ArxivClient, queue_manager: QueueManager):
         self.arxiv_client = arxiv_client
@@ -17,24 +17,28 @@ class FetcherService:
         self.logger = logging.getLogger('FetcherService')
         self.target_categories = set(config.CHANNEL_MAPPING.keys())
 
-    async def fetch_and_enqueue(self, max_results: int = 100, is_initial: bool = False):
-        """논문을 가져와서 큐에 추가"""
+    async def fetch_and_enqueue_for_date(self, target_date, date_str: str):
+        """특정 날짜의 논문을 가져와서 큐에 추가"""
         try:
+            print(f'\n{"=" * 80}')
+            print(f'📚 arXiv에서 {date_str} 논문 가져오는 중...')
+            print(f'카테고리: {", ".join(config.ARXIV_CATEGORIES)}')
+            print(f'{"=" * 80}\n')
+
             # arxiv에서 논문 가져오기
-            papers = self.arxiv_client.fetch_recent(max_results=max_results)
+            self.logger.info(f'Fetch 시작: {date_str}')
+            papers = self.arxiv_client.fetch_by_date(target_date)
+            self.logger.info(f'총 {len(papers)}개 논문 발견')
+            print(f'[FETCH] 총 {len(papers)}개 논문 발견\n')
 
-            if is_initial:
-                self.logger.info(f'초기 실행: {len(papers)}개 논문 처리 중...')
-
-            # 중복 제거 및 큐에 추가
+            # 필터링 및 큐에 추가
             added_count = 0
             duplicate_count = 0
             ignored_count = 0
+            failed_count = 0
 
-            for paper in papers:
-                published_date = paper.published.strftime('%Y-%m-%d')
-
-                # 1. 카테고리 필터링: primary 또는 secondary 중 하나라도 매칭되어야 함
+            for i, paper in enumerate(papers, 1):
+                # 1. 카테고리 필터링
                 if not self._has_target_category(paper):
                     ignored_count += 1
                     self.logger.debug(
@@ -44,25 +48,44 @@ class FetcherService:
                     continue
 
                 # 2. 중복 체크
-                if self.queue_manager.is_duplicate(paper.arxiv_id, published_date):
+                if self.queue_manager.is_duplicate(paper.arxiv_id, date_str):
                     duplicate_count += 1
+                    self.logger.debug(f'중복 제외: {paper.arxiv_id}')
                     continue
 
-                # 3. pending에 추가
-                if self.queue_manager.add_pending(paper):
+                # 3. HTML 다운로드 (없으면 Abstract 사용)
+                try:
+                    content, content_type = self.arxiv_client.download_html(paper)
+                except Exception as e:
+                    self.logger.error(f'다운로드 실패: {paper.arxiv_id}, {e}')
+                    failed_count += 1
+                    continue
+
+                # 4. pending에 추가
+                if self.queue_manager.add_pending(paper, content, content_type, date_str):
                     added_count += 1
-                    self.logger.debug(f'Pending 추가: {paper.arxiv_id} (primary: {paper.primary_category})')
+                    content_label = 'HTML' if content_type == 'html' else 'Abstract'
+                    self.logger.info(
+                        f'Pending 추가: {paper.full_id} ({content_label}, primary: {paper.primary_category})'
+                    )
+
+                if i % 10 == 0:
+                    print(f'  진행 중... {i}/{len(papers)} 처리됨 (추가: {added_count})')
 
             self.logger.info(
-                f'Fetch 완료 - 새 논문: {added_count}개, 중복: {duplicate_count}개, 카테고리 무시: {ignored_count}개'
+                f'Fetch 완료 - 새 논문: {added_count}개, 중복: {duplicate_count}개, '
+                f'카테고리 무시: {ignored_count}개, 실패: {failed_count}개'
             )
             print(f'\n{"=" * 80}')
-            print('📊 Fetch 결과')
-            print(f'  새 논문: {added_count}개')
+            print('[QUEUE] Fetch 완료')
+            print(f'  새 논문 추가: {added_count}개')
             print(f'  중복 제외: {duplicate_count}개')
             print(f'  카테고리 무시: {ignored_count}개')
-            print(f'  대기 큐: {self.queue_manager.get_pending_count()}개')
+            if failed_count > 0:
+                print(f'  다운로드 실패: {failed_count}개')
             print(f'{"=" * 80}\n')
+
+            return added_count
 
         except Exception as e:
             self.logger.error(f'Fetch 실패: {e}')

@@ -3,3 +3,4 @@ python-dotenv
 arxiv
 openai
 pydantic
+requests

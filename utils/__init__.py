@@ -1,4 +1,5 @@
-from .logger import setup_logger
-from .stats import StatsGenerator
+"""유틸리티 모듈"""
 
-__all__ = ['setup_logger', 'StatsGenerator']
+from .logger import setup_logger
+
+__all__ = ['setup_logger']

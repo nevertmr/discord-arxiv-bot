@@ -1,15 +1,18 @@
 """
-arXiv 논문 자동 알림 Discord 봇
-- arXiv에서 최신 논문 자동 수집
+arXiv 논문 자동 알림 Discord 봇 (일회성 실행)
+- 특정 날짜의 arXiv 논문 수집
+- HTML 전문 다운로드
 - vLLM으로 논문 분석
 - Discord 채널별 자동 발송
 """
 
-import asyncio
+import argparse
 import logging
+import sys
+from datetime import datetime
 
 import discord
-from discord.ext import commands, tasks
+from discord.ext import commands
 
 import config
 from clients.arxiv_client import ArxivClient
@@ -19,141 +22,128 @@ from core.queue_manager import QueueManager
 from services.fetcher_service import FetcherService
 from services.processor_service import ProcessorService
 from utils.logger import setup_logger
-from utils.stats import StatsGenerator
-
-# 로깅 설정
-setup_logger(log_level=logging.INFO)
-logger = logging.getLogger('Bot')
-
-# Discord 봇 설정
-intents = discord.Intents.default()
-intents.message_content = True
-bot = commands.Bot(command_prefix='!', intents=intents)
-
-# 모듈 초기화
-queue_manager = QueueManager(data_dir='data')
-stats_generator = StatsGenerator(completed_dir='data/completed')
-
-arxiv_client = ArxivClient(categories=config.ARXIV_CATEGORIES)
-vllm_client = VLLMClient(
-    base_url=config.VLLM_BASE_URL,
-    model=config.VLLM_MODEL,
-    max_tokens=config.VLLM_MAX_TOKENS,
-    temperature=config.VLLM_TEMPERATURE,
-    timeout=config.VLLM_TIMEOUT,
-)
-discord_client = DiscordClient(bot=bot, channel_mapping=config.CHANNEL_MAPPING)
-
-fetcher_service = FetcherService(arxiv_client=arxiv_client, queue_manager=queue_manager)
-processor_service = ProcessorService(
-    vllm_client=vllm_client,
-    discord_client=discord_client,
-    queue_manager=queue_manager,
-    max_retries=config.VLLM_MAX_RETRIES,
-    consecutive_failure_limit=config.VLLM_CONSECUTIVE_FAILURE_LIMIT,
-)
-
-# 전역 태스크
-processor_task = None
 
 
-@bot.event
-async def on_ready():
-    """봇이 준비되면 실행"""
-    logger.info(f'봇 로그인: {bot.user.name} (ID: {bot.user.id})')
-    print(f'\n{"=" * 80}')
-    print(f'봇 시작됨: {bot.user.name}')
-    print(f'{"=" * 80}\n')
+def parse_arguments():
+    """커맨드 라인 인자 파싱"""
+    parser = argparse.ArgumentParser(description='arXiv 논문 자동 알림 Discord 봇')
+    parser.add_argument('--date', type=str, required=True, help='처리할 날짜 (YYYY-MM-DD)')
+    args = parser.parse_args()
 
-    # Processing 복구
-    queue_manager.restore_processing_to_pending()
-
-    # 어제 통계 생성 (아직 안 했으면)
-    stats_generator.check_and_generate_yesterday_stats()
-
-    # 초기 실행 확인
-    if queue_manager.is_pending_empty():
-        logger.info(f'초기 실행 감지 - {config.INITIAL_FETCH_COUNT}개 논문 가져오기')
-        print(f'\n{"=" * 80}')
-        print(f'초기 실행: {config.INITIAL_FETCH_COUNT}개 논문을 가져옵니다...')
-        print(f'{"=" * 80}\n')
-        await fetcher_service.fetch_and_enqueue(max_results=config.INITIAL_FETCH_COUNT, is_initial=True)
-    else:
-        pending_count = queue_manager.get_pending_count()
-        logger.info(f'대기 큐: {pending_count}개 논문')
-        print(f'대기 큐: {pending_count}개 논문\n')
-
-    # 태스크 시작
-    fetch_papers_task.start()
-
-    # Processor를 별도 태스크로 실행
-    global processor_task
-    processor_task = asyncio.create_task(processor_service.process_queue())
-
-
-@tasks.loop(minutes=config.CHECK_INTERVAL_MINUTES)
-async def fetch_papers_task():
-    """주기적으로 arXiv에서 새 논문 가져오기"""
+    # 날짜 검증
     try:
-        logger.info('정기 Fetch 시작')
-        await fetcher_service.fetch_and_enqueue(max_results=config.INITIAL_FETCH_COUNT)
-    except Exception as e:
-        logger.error(f'Fetch 태스크 에러: {e}')
+        target_date = datetime.strptime(args.date, '%Y-%m-%d').date()
+        return target_date, args.date
+    except ValueError:
+        print('오류: 날짜 형식이 올바르지 않습니다. YYYY-MM-DD 형식으로 입력하세요. (예: 2025-11-22)')
+        sys.exit(1)
 
 
-@fetch_papers_task.before_loop
-async def before_fetch():
-    """Fetch 태스크 시작 전 봇이 준비될 때까지 대기"""
-    await bot.wait_until_ready()
+def create_bot(target_date, date_str):
+    """Discord 봇 생성 및 초기화"""
+    # 로깅 설정
+    setup_logger(log_level=logging.INFO)
+    logger = logging.getLogger('Bot')
 
+    # Discord 봇 설정
+    intents = discord.Intents.default()
+    intents.message_content = True
+    bot = commands.Bot(command_prefix='!', intents=intents)
 
-@bot.event
-async def on_command_error(ctx, error):
-    """명령어 에러 처리"""
-    if isinstance(error, commands.CommandNotFound):
-        return
-    logger.error(f'명령어 에러: {error}')
+    # 모듈 초기화
+    queue_manager = QueueManager(data_dir='data')
 
+    arxiv_client = ArxivClient(categories=config.ARXIV_CATEGORIES)
+    vllm_client = VLLMClient(
+        base_url=config.VLLM_BASE_URL,
+        model=config.VLLM_MODEL,
+        max_tokens=config.VLLM_MAX_TOKENS,
+        temperature=config.VLLM_TEMPERATURE,
+        timeout=config.VLLM_TIMEOUT,
+    )
+    discord_client = DiscordClient(bot=bot, channel_mapping=config.CHANNEL_MAPPING)
 
-async def shutdown():
-    """봇 종료 처리"""
-    logger.info('봇 종료 중...')
+    fetcher_service = FetcherService(arxiv_client=arxiv_client, queue_manager=queue_manager)
+    processor_service = ProcessorService(
+        vllm_client=vllm_client,
+        discord_client=discord_client,
+        queue_manager=queue_manager,
+        max_retries=config.VLLM_MAX_RETRIES,
+    )
 
-    # 태스크 중지
-    if fetch_papers_task.is_running():
-        fetch_papers_task.cancel()
+    @bot.event
+    async def on_ready():
+        """봇이 준비되면 실행"""
+        logger.info(f'봇 로그인: {bot.user.name} (ID: {bot.user.id})')
 
-    processor_service.stop()
+        print(f'\n{"=" * 80}')
+        print('=== arXiv Discord Notifier ===')
+        print(f'날짜: {date_str}')
+        print(f'봇: {bot.user.name}')
+        print(f'{"=" * 80}\n')
 
-    if processor_task:
-        processor_task.cancel()
         try:
-            await processor_task
-        except asyncio.CancelledError:
-            pass
+            # 1. Fetch: arXiv에서 논문 가져오기 (이미 있으면 스킵)
+            pending_count = queue_manager.get_pending_count(date_str)
+            if pending_count == 0:
+                logger.info(f'{date_str}: pending 큐가 비어있음 - Fetch 시작')
+                added_count = await fetcher_service.fetch_and_enqueue_for_date(target_date, date_str)
 
-    await bot.close()
-    logger.info('봇 종료 완료')
+                if added_count == 0:
+                    print(f'\n{"=" * 80}')
+                    print(f'{date_str}: 처리할 논문이 없습니다.')
+                    print(f'{"=" * 80}\n')
+                    await bot.close()
+                    return
+            else:
+                logger.info(f'{date_str}: pending에 {pending_count}개 논문 존재 - Fetch 스킵')
+                print(f'\n{"=" * 80}')
+                print(f'[QUEUE] pending에 {pending_count}개 논문 존재 (Fetch 스킵)')
+                print(f'{"=" * 80}\n')
+
+            # 2. Process: vLLM 분석 및 Discord 발송
+            await processor_service.process_all_for_date(date_str)
+
+            # 3. Stats: 통계 생성
+            stats = queue_manager.generate_stats(date_str)
+            logger.info(f'통계 생성: {stats}')
+
+            print(f'\n{"=" * 80}')
+            print('[통계]')
+            for category, count in sorted(stats.items()):
+                print(f'  {category}: {count}')
+            print(f'{"=" * 80}\n')
+
+            logger.info('모든 작업 완료')
+
+        except Exception as e:
+            logger.error(f'작업 실패: {e}', exc_info=True)
+            print(f'\n❌ 오류 발생: {e}\n')
+        finally:
+            # 봇 종료
+            await bot.close()
+
+    return bot
 
 
 def main():
     """메인 실행"""
-    if not config.DISCORD_TOKEN:
-        print('오류: .env 파일에 DISCORD_TOKEN을 설정해주세요!')
-        return
+    # 설정 검증
+    config.validate_config()
 
-    if not config.CHANNEL_MAPPING:
-        print('경고: 채널 매핑이 설정되지 않았습니다. .env 파일을 확인하세요.')
+    # 인자 파싱
+    target_date, date_str = parse_arguments()
+
+    # 봇 생성 및 실행
+    bot = create_bot(target_date, date_str)
 
     try:
         bot.run(config.DISCORD_TOKEN)
     except KeyboardInterrupt:
-        logger.info('KeyboardInterrupt 감지')
+        logging.getLogger('Bot').info('KeyboardInterrupt 감지')
     except Exception as e:
-        logger.error(f'봇 실행 에러: {e}')
-    finally:
-        # 정리 작업
-        pass
+        logging.getLogger('Bot').error(f'봇 실행 에러: {e}', exc_info=True)
+        sys.exit(1)
 
 
 if __name__ == '__main__':

@@ -29,7 +29,7 @@ fi
 echo ""
 echo "Python 패키지를 설치합니다..."
 source .venv/bin/activate
-uv pip install discord.py python-dotenv arxiv openai pydantic
+uv pip install discord.py python-dotenv arxiv openai pydantic requests
 
 # 디렉토리 생성
 echo ""
@@ -45,17 +45,12 @@ if [ ! -f .env ]; then
 DISCORD_TOKEN=
 
 # 카테고리별 채널 ID (Discord에서 채널 우클릭 -> ID 복사)
-CHANNEL_CS_AI=1441799461603905557
-CHANNEL_CS_LG=1441799593661825218
-CHANNEL_CS_CV=1441799669641515100
-CHANNEL_CS_CL=1441799734481256588
-CHANNEL_CS_NE=1441799782028021921
-CHANNEL_CS_CR=1441821195124084887
-
-
-# arXiv 설정
-CHECK_INTERVAL_MINUTES=1
-INITIAL_FETCH_COUNT=100
+CHANNEL_CS_AI=
+CHANNEL_CS_LG=
+CHANNEL_CS_CV=
+CHANNEL_CS_CL=
+CHANNEL_CS_NE=
+CHANNEL_CS_CR=
 
 # vLLM 설정
 VLLM_BASE_URL=http://192.168.31.165:8000/v1
@@ -64,7 +59,6 @@ VLLM_MAX_TOKENS=1000
 VLLM_TEMPERATURE=0.0
 VLLM_TIMEOUT=120
 VLLM_MAX_RETRIES=3
-VLLM_CONSECUTIVE_FAILURE_LIMIT=3
 EOL
     echo ".env 파일이 생성되었습니다!"
 else
@@ -73,12 +67,13 @@ else
 fi
 
 echo ""
-echo "="
+echo "========================================"
 echo "설치가 완료되었습니다!"
-echo "="
+echo "========================================"
 echo ""
 echo "다음 단계:"
 echo "1. .env 파일을 열어서 DISCORD_TOKEN과 채널 ID를 설정하세요"
 echo "2. vLLM 서버가 실행 중인지 확인하세요"
-echo "3. 'bash run.sh' 또는 'python bot.py'로 봇을 실행하세요"
+echo "3. 'bash run.sh --date YYYY-MM-DD'로 봇을 실행하세요"
+echo "   예: bash run.sh --date 2025-11-22"
 echo ""
