@@ -85,6 +85,7 @@ discord-arxiv-bot/
    - argparse는 bot.py에서 처리 (설정과 실행 로직 분리)
    - Paper 모델에 `full_id` 속성으로 arxiv_id+version 추상화
    - 설정 검증은 config.py의 `validate_config()` 함수로 분리
+   - 재시도 로직은 `_retry_with_backoff()` 헬퍼 함수로 추상화 (코드 중복 제거)
 
 ## 사용법
 
@@ -123,10 +124,10 @@ VLLM_MAX_RETRIES=3
 
 ```bash
 # run.sh 사용
-bash run.sh --date 2025-11-22
+bash run.sh --date 2025-11-24
 
 # 직접 실행
-python bot.py --date 2025-11-22
+python bot.py --date 2025-11-24
 ```
 
 ## 출력 예시

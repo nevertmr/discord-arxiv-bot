@@ -1,4 +1,4 @@
-"""논문 처리 서비스"""
+"""Paper processing service"""
 
 import asyncio
 import logging
@@ -11,7 +11,10 @@ from models.paper import Paper
 
 
 class ProcessorService:
-    """큐에서 논문을 가져와 HTML 다운로드, vLLM 분석, Discord 발송하는 서비스"""
+    """Service to fetch papers from queue, download HTML, analyze with vLLM, and send to Discord"""
+
+    # Retry delay in seconds
+    RETRY_DELAY_SECONDS = 5
 
     def __init__(
         self,
@@ -29,7 +32,7 @@ class ProcessorService:
         self.logger = logging.getLogger('ProcessorService')
 
     async def process_all_for_date(self, date_str: str):
-        """해당 날짜의 모든 논문 처리"""
+        """Process all papers for the given date"""
         papers = self.queue_manager.get_pending_papers(date_str)
         total = len(papers)
 
@@ -55,7 +58,7 @@ class ProcessorService:
             else:
                 failed_papers.append(paper.arxiv_id)
 
-        # 최종 결과
+        # Final results
         print(f'\n{"=" * 80}')
         print('=== 완료 ===')
         print(f'총 처리: {total}개')
@@ -67,8 +70,32 @@ class ProcessorService:
 
         self.logger.info(f'처리 완료 - 성공: {success_count}/{total}')
 
+    async def _retry_with_backoff(self, operation_func, operation_name: str, error_message: str):
+        """Helper function for retry logic with backoff"""
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                self.logger.info(f'{operation_name} 시도 {attempt}/{self.max_retries}')
+                print(f'  - {operation_name} 중... (시도 {attempt}/{self.max_retries})')
+
+                result = await operation_func()
+                return result
+
+            except Exception as e:
+                self.logger.error(f'{operation_name} 에러 (시도 {attempt}/{self.max_retries}): {e}')
+                print(f'  - {operation_name} 에러: {e}')
+
+                if attempt < self.max_retries:
+                    self.logger.info(f'재시도 대기 중... ({self.RETRY_DELAY_SECONDS}초)')
+                    print(f'  - {self.RETRY_DELAY_SECONDS}초 후 재시도...')
+                    await asyncio.sleep(self.RETRY_DELAY_SECONDS)
+                else:
+                    self.logger.error(f'{error_message} (최대 재시도 초과)')
+                    print(f'  - ❌ {error_message}: 최대 재시도 초과')
+                    print('\n프로그램을 종료합니다.\n')
+                    raise RuntimeError(f'{error_message} ({self.max_retries}회 시도)') from e
+
     async def _process_single_paper(self, paper: Paper, date_str: str, idx: int, total: int) -> bool:
-        """단일 논문 처리"""
+        """Process a single paper"""
         self.logger.info(f'처리 시작 [{idx}/{total}]: {paper.full_id}')
 
         print(f'\n{"=" * 80}')
@@ -78,92 +105,34 @@ class ProcessorService:
         print(f'  - 카테고리: {paper.primary_category}')
         print(f'{"=" * 80}')
 
-        # 1. HTML 다운로드 (재시도 로직)
-        content = None
-        content_type = None
+        # 1. Download HTML
+        async def download_operation():
+            content, content_type = await asyncio.to_thread(self.arxiv_client.download_html, paper)
+            content_label = 'HTML' if content_type == 'html' else 'Abstract'
+            print(f'  - {content_label} 로드 완료 ({len(content):,} chars)')
+            return content, content_type
 
-        for attempt in range(1, self.max_retries + 1):
-            try:
-                self.logger.info(f'HTML 다운로드 시도 {attempt}/{self.max_retries}: {paper.arxiv_id}')
-                print(f'  - HTML 다운로드 중... (시도 {attempt}/{self.max_retries})')
+        content, content_type = await self._retry_with_backoff(
+            download_operation, 'HTML 다운로드', f'다운로드 실패: {paper.arxiv_id}'
+        )
 
-                # 동기 함수를 비동기로 실행
-                content, content_type = await asyncio.to_thread(self.arxiv_client.download_html, paper)
-                content_label = 'HTML' if content_type == 'html' else 'Abstract'
-                print(f'  - {content_label} 로드 완료 ({len(content):,} chars)')
-                break
+        # 2. Analyze with vLLM
+        async def vllm_operation():
+            return await asyncio.to_thread(self.vllm_client.analyze_paper, paper, content, content_type)
 
-            except Exception as e:
-                self.logger.error(f'다운로드 에러 (시도 {attempt}/{self.max_retries}): {e}')
-                print(f'  - 다운로드 에러: {e}')
+        analysis = await self._retry_with_backoff(vllm_operation, 'vLLM 분석', f'vLLM 분석 실패: {paper.arxiv_id}')
 
-                if attempt < self.max_retries:
-                    self.logger.info('재시도 대기 중... (5초)')
-                    print('  - 5초 후 재시도...')
-                    await asyncio.sleep(5)
-                else:
-                    self.logger.error(f'다운로드 실패 (최대 재시도 초과): {paper.arxiv_id}')
-                    print('  - ❌ 다운로드 실패: 최대 재시도 초과')
-                    print('\n프로그램을 종료합니다.\n')
-                    raise RuntimeError(f'HTML 다운로드 실패 (3회 시도): {paper.arxiv_id}') from e
+        # 3. Send to Discord
+        async def discord_operation():
+            success = await self.discord_client.send_paper_notification(paper, analysis, content_type)
+            if not success:
+                raise RuntimeError('Discord 발송이 False를 반환했습니다')
+            return success
 
-        if not content:
-            return False
+        await self._retry_with_backoff(discord_operation, 'Discord 발송', f'Discord 발송 실패: {paper.arxiv_id}')
 
-        # 2. vLLM으로 분석 (재시도 로직)
-        analysis = None
-        for attempt in range(1, self.max_retries + 1):
-            try:
-                self.logger.info(f'vLLM 시도 {attempt}/{self.max_retries}: {paper.arxiv_id}')
-                print(f'  - vLLM 분석 중... (시도 {attempt}/{self.max_retries})')
-
-                # Discord heartbeat 블로킹 방지
-                analysis = await asyncio.to_thread(self.vllm_client.analyze_paper, paper, content, content_type)
-                break
-
-            except Exception as e:
-                self.logger.error(f'vLLM 에러 (시도 {attempt}/{self.max_retries}): {e}')
-                print(f'  - vLLM 에러: {e}')
-
-                if attempt < self.max_retries:
-                    self.logger.info('재시도 대기 중... (5초)')
-                    print('  - 5초 후 재시도...')
-                    await asyncio.sleep(5)
-                else:
-                    self.logger.error(f'논문 처리 실패 (최대 재시도 초과): {paper.arxiv_id}')
-                    print('  - ❌ 처리 실패: 최대 재시도 초과')
-                    print('\n프로그램을 종료합니다.\n')
-                    raise RuntimeError(f'vLLM 분석 실패 (3회 시도): {paper.arxiv_id}') from e
-
-        if not analysis:
-            return False
-
-        # 3. Discord 발송 (재시도)
-        for attempt in range(1, self.max_retries + 1):
-            try:
-                print(f'  - Discord 발송 중... (시도 {attempt}/{self.max_retries})')
-                success = await self.discord_client.send_paper_notification(paper, analysis, content_type)
-
-                if success:
-                    # 완료 처리
-                    self.queue_manager.complete_processing(paper, content, content_type, analysis, date_str)
-                    self.logger.info(f'처리 완료 [{idx}/{total}]: {paper.arxiv_id}')
-                    print(f'  - ✓ Discord 발송 완료 ({paper.primary_category})')
-                    return True
-                else:
-                    raise RuntimeError('Discord 발송 실패')
-
-            except Exception as e:
-                self.logger.error(f'Discord 발송 에러 (시도 {attempt}/{self.max_retries}): {e}')
-                print(f'  - Discord 에러: {e}')
-
-                if attempt < self.max_retries:
-                    print('  - 5초 후 재시도...')
-                    await asyncio.sleep(5)
-                else:
-                    self.logger.error(f'Discord 발송 실패 (최대 재시도 초과): {paper.arxiv_id}')
-                    print('  - ❌ Discord 발송 실패: 최대 재시도 초과')
-                    print('\n프로그램을 종료합니다.\n')
-                    raise RuntimeError(f'Discord 발송 실패 (3회 시도): {paper.arxiv_id}') from e
-
-        return False
+        # Mark as completed
+        self.queue_manager.complete_processing(paper, content, content_type, analysis, date_str)
+        self.logger.info(f'처리 완료 [{idx}/{total}]: {paper.arxiv_id}')
+        print(f'  - ✓ Discord 발송 완료 ({paper.primary_category})')
+        return True
