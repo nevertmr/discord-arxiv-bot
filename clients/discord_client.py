@@ -113,7 +113,13 @@ class DiscordClient:
 
         # Abstract 기반 분석인 경우 안내 메시지 추가
         if content_type == 'abstract':
+            # HTML이 없어서 Abstract 사용
             analysis_text += '\n\n_ℹ️ 해당 논문은 전문 HTML을 제공하지 않아 Abstract 기반으로 정리되었습니다._'
+        elif content_type == 'abstract_large':
+            # HTML이 너무 커서 Abstract로 fallback
+            analysis_text += (
+                '\n\n_ℹ️ 해당 논문은 128K 컨텍스트를 넘어 Abstract 기반으로 정리되었습니다 (추후 개선 예정)_'
+            )
 
         # 2000자 제한 체크
         if len(analysis_text) > 1024:

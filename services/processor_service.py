@@ -81,6 +81,12 @@ class ProcessorService:
                 return result
 
             except Exception as e:
+                # max_token error should not be retried - fail immediately
+                if 'max_tokens must be at least 1' in str(e):
+                    self.logger.error(f'{operation_name} max_token Error')
+                    print('  - max_token Error')
+                    raise RuntimeError(f'{error_message}') from e
+
                 self.logger.error(f'{operation_name} 에러 (시도 {attempt}/{self.max_retries}): {e}')
                 print(f'  - {operation_name} 에러: {e}')
 
@@ -120,7 +126,30 @@ class ProcessorService:
         async def vllm_operation():
             return await asyncio.to_thread(self.vllm_client.analyze_paper, paper, content, content_type)
 
-        analysis = await self._retry_with_backoff(vllm_operation, 'vLLM 분석', f'vLLM 분석 실패: {paper.arxiv_id}')
+        try:
+            analysis = await self._retry_with_backoff(vllm_operation, 'vLLM 분석', f'vLLM 분석 실패: {paper.arxiv_id}')
+        except RuntimeError as e:
+            # If max_token error with HTML, retry with Abstract
+            if content_type == 'html' and e.__cause__ and 'max_tokens must be at least 1' in str(e.__cause__):
+                self.logger.warning(
+                    f'HTML too large for {paper.arxiv_id} ({len(content):,} chars), retrying with Abstract'
+                )
+                print(f'  - ⚠️  HTML too large ({len(content):,} chars), retrying with Abstract')
+
+                # Switch to Abstract
+                content = paper.summary
+                content_type = 'abstract_large'  # Mark as fallback due to size
+                print(f'  - Abstract 로드 완료 ({len(content):,} chars)')
+
+                # Retry with Abstract
+                async def vllm_operation_abstract():
+                    return await asyncio.to_thread(self.vllm_client.analyze_paper, paper, content, content_type)
+
+                analysis = await self._retry_with_backoff(
+                    vllm_operation_abstract, 'vLLM 분석 (Abstract)', f'vLLM 분석 실패: {paper.arxiv_id}'
+                )
+            else:
+                raise
 
         # 3. Send to Discord
         async def discord_operation():
