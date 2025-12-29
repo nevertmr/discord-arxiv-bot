@@ -16,6 +16,9 @@ class ProcessorService:
     # Retry delay in seconds
     RETRY_DELAY_SECONDS = 5
 
+    # Progressive max_tokens for JSON parsing errors
+    MAX_TOKENS_PROGRESSION = [1000, 2000, 3000]
+
     def __init__(
         self,
         arxiv_client: ArxivClient,
@@ -122,34 +125,97 @@ class ProcessorService:
             download_operation, 'HTML 다운로드', f'다운로드 실패: {paper.arxiv_id}'
         )
 
-        # 2. Analyze with vLLM
-        async def vllm_operation():
-            return await asyncio.to_thread(self.vllm_client.analyze_paper, paper, content, content_type)
+        # 2. Analyze with vLLM (with progressive max_tokens for JSON parsing errors)
+        analysis = None
 
-        try:
-            analysis = await self._retry_with_backoff(vllm_operation, 'vLLM 분석', f'vLLM 분석 실패: {paper.arxiv_id}')
-        except RuntimeError as e:
-            # If max_token error with HTML, retry with Abstract
-            if content_type == 'html' and e.__cause__ and 'max_tokens must be at least 1' in str(e.__cause__):
-                self.logger.warning(
-                    f'HTML too large for {paper.arxiv_id} ({len(content):,} chars), retrying with Abstract'
-                )
-                print(f'  - ⚠️  HTML too large ({len(content):,} chars), retrying with Abstract')
-
-                # Switch to Abstract
-                content = paper.summary
-                content_type = 'abstract_large'  # Mark as fallback due to size
-                print(f'  - Abstract 로드 완료 ({len(content):,} chars)')
-
-                # Retry with Abstract
-                async def vllm_operation_abstract():
-                    return await asyncio.to_thread(self.vllm_client.analyze_paper, paper, content, content_type)
+        for max_tokens in self.MAX_TOKENS_PROGRESSION:
+            try:
+                # Bind loop variables to avoid closure issues
+                async def vllm_operation(_content=content, _content_type=content_type, _max_tokens=max_tokens):
+                    return await asyncio.to_thread(
+                        self.vllm_client.analyze_paper, paper, _content, _content_type, max_tokens=_max_tokens
+                    )
 
                 analysis = await self._retry_with_backoff(
-                    vllm_operation_abstract, 'vLLM 분석 (Abstract)', f'vLLM 분석 실패: {paper.arxiv_id}'
+                    vllm_operation, f'vLLM 분석 (max_tokens={max_tokens})', f'vLLM 분석 실패: {paper.arxiv_id}'
                 )
-            else:
-                raise
+                break  # Success - exit the loop
+
+            except RuntimeError as e:
+                error_str = str(e.__cause__) if e.__cause__ else str(e)
+
+                # Case 1: max_token error (context overflow) - switch to Abstract
+                if content_type == 'html' and 'max_tokens must be at least 1' in error_str:
+                    self.logger.warning(
+                        f'HTML too large for {paper.arxiv_id} ({len(content):,} chars), retrying with Abstract'
+                    )
+                    print(f'  - ⚠️  HTML too large ({len(content):,} chars), retrying with Abstract')
+
+                    # Switch to Abstract
+                    content = paper.summary
+                    content_type = 'abstract_large'
+                    print(f'  - Abstract 로드 완료 ({len(content):,} chars)')
+
+                    # Retry with Abstract (restart max_tokens progression)
+                    for max_tokens_abstract in self.MAX_TOKENS_PROGRESSION:
+                        try:
+                            # Bind loop variables to avoid closure issues
+                            async def vllm_operation_abstract(
+                                _content=content, _content_type=content_type, _max_tokens=max_tokens_abstract
+                            ):
+                                return await asyncio.to_thread(
+                                    self.vllm_client.analyze_paper,
+                                    paper,
+                                    _content,
+                                    _content_type,
+                                    max_tokens=_max_tokens,
+                                )
+
+                            analysis = await self._retry_with_backoff(
+                                vllm_operation_abstract,
+                                f'vLLM 분석 (Abstract, max_tokens={max_tokens_abstract})',
+                                f'vLLM 분석 실패: {paper.arxiv_id}',
+                            )
+                            break
+                        except RuntimeError as e_abstract:
+                            error_str_abstract = str(e_abstract.__cause__) if e_abstract.__cause__ else str(e_abstract)
+
+                            # JSON parsing error with Abstract - try next max_tokens
+                            if (
+                                'JSON 파싱 실패' in error_str_abstract or 'Unterminated string' in error_str_abstract
+                            ) and max_tokens_abstract != self.MAX_TOKENS_PROGRESSION[-1]:
+                                self.logger.warning(
+                                    f'JSON 파싱 실패 (Abstract, max_tokens={max_tokens_abstract}), '
+                                    f'다음 시도: {self.MAX_TOKENS_PROGRESSION[self.MAX_TOKENS_PROGRESSION.index(max_tokens_abstract) + 1]}'
+                                )
+                                print(
+                                    f'  - ⚠️  JSON 파싱 실패, max_tokens를 {max_tokens_abstract} → '
+                                    f'{self.MAX_TOKENS_PROGRESSION[self.MAX_TOKENS_PROGRESSION.index(max_tokens_abstract) + 1]}로 증가'
+                                )
+                                continue
+                            else:
+                                raise
+
+                    if analysis:
+                        break  # Success with Abstract
+                    else:
+                        raise  # Failed even with Abstract
+
+                # Case 2: JSON parsing error - try next max_tokens
+                elif (
+                    'JSON 파싱 실패' in error_str or 'Unterminated string' in error_str
+                ) and max_tokens != self.MAX_TOKENS_PROGRESSION[-1]:
+                    next_tokens = self.MAX_TOKENS_PROGRESSION[self.MAX_TOKENS_PROGRESSION.index(max_tokens) + 1]
+                    self.logger.warning(f'JSON 파싱 실패 (max_tokens={max_tokens}), 다음 시도: {next_tokens}')
+                    print(f'  - ⚠️  JSON 파싱 실패, max_tokens를 {max_tokens} → {next_tokens}로 증가')
+                    continue  # Try next max_tokens
+
+                # Case 3: Other errors or last max_tokens - fail
+                else:
+                    raise
+
+        if not analysis:
+            raise RuntimeError(f'vLLM 분석 실패: {paper.arxiv_id} (모든 max_tokens 시도 완료)')
 
         # 3. Send to Discord
         async def discord_operation():

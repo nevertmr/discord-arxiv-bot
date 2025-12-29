@@ -24,7 +24,7 @@ for category in ['CS_AI', 'CS_LG', 'CS_CV', 'CS_CL', 'CS_NE', 'CS_CR']:
 ARXIV_CATEGORIES = ['cs.AI', 'cs.LG', 'cs.CV', 'cs.CL', 'cs.NE', 'cs.CR']
 
 # vLLM 설정
-VLLM_BASE_URL = os.getenv('VLLM_BASE_URL', 'http://localhost:8000/v1')
+VLLM_BASE_URL = os.getenv('VLLM_BASE_URL', 'http://192.168.110.102:8000/v1')
 VLLM_MODEL = os.getenv('VLLM_MODEL', '/models/gpt-oss-120b')
 VLLM_MAX_TOKENS = int(os.getenv('VLLM_MAX_TOKENS', '1000'))
 VLLM_TEMPERATURE = float(os.getenv('VLLM_TEMPERATURE', '0.0'))

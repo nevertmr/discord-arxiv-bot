@@ -19,19 +19,24 @@ class VLLMClient:
         self.temperature = temperature
         self.logger = logging.getLogger('VLLMClient')
 
-    def analyze_paper(self, paper: Paper, content: str, content_type: str) -> Analysis:
+    def analyze_paper(self, paper: Paper, content: str, content_type: str, max_tokens: int = None) -> Analysis:
         """논문 분석 (Structured Output)"""
         prompt = self._create_prompt(paper, content, content_type)
 
-        self.logger.info(f'vLLM 분석 요청: {paper.arxiv_id} ({content_type}, {len(content)} chars)')
+        # Use provided max_tokens or default
+        tokens = max_tokens if max_tokens is not None else self.max_tokens
+
+        self.logger.info(
+            f'vLLM 분석 요청: {paper.arxiv_id} ({content_type}, {len(content)} chars, max_tokens={tokens})'
+        )
 
         # Streaming 응답
-        print(f'    vLLM 응답 ({content_type}, {len(content):,} chars): ', end='', flush=True)
+        print(f'    vLLM 응답 ({content_type}, {len(content):,} chars, max_tokens={tokens}): ', end='', flush=True)
         stream = self.client.chat.completions.create(
             model=self.model,
             messages=[{'role': 'user', 'content': prompt}],
             stream=True,
-            max_tokens=self.max_tokens,
+            max_tokens=tokens,
             temperature=self.temperature,
             response_format={'type': 'json_object'},
         )
