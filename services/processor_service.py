@@ -69,6 +69,16 @@ class ProcessorService:
         if failed_papers:
             print(f'실패: {len(failed_papers)}개')
             print(f'실패 논문: {", ".join(failed_papers)}')
+
+        # LLM 메모리 절감 기법 TOP5 저장
+        top5 = self.queue_manager.save_efficiency_top5(date_str)
+        if top5:
+            print(f'\n📊 LLM Efficiency TOP5:')
+            for paper in top5:
+                print(f"  {paper['rank']}. [{paper['efficiency_score']}점] {paper['title'][:50]}...")
+        else:
+            print(f'\n📊 LLM 메모리 절감 관련 논문 없음')
+
         print(f'{"=" * 80}\n')
 
         self.logger.info(f'처리 완료 - 성공: {success_count}/{total}')

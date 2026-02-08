@@ -145,3 +145,61 @@ class QueueManager:
             json.dump(stats, f, ensure_ascii=False, indent=2)
 
         return stats
+
+    def save_efficiency_top5(self, date_str: str) -> list[dict]:
+        """LLM 메모리 절감 기법 관련도 점수 기준 TOP5 논문 저장"""
+        completed_date_dir = self.completed_dir / date_str
+        if not completed_date_dir.exists():
+            self.logger.warning(f'Efficiency TOP5: completed 디렉토리 없음 ({date_str})')
+            return []
+
+        # 1. 모든 completed JSON 읽기 (stats.json, efficiency_top5.json 제외)
+        papers_with_scores = []
+        for json_file in completed_date_dir.glob('*.json'):
+            if json_file.name in ('stats.json', 'efficiency_top5.json'):
+                continue
+            try:
+                with open(json_file, encoding='utf-8') as f:
+                    data = json.load(f)
+
+                # efficiency_score 점수 추출
+                llm_analysis = data.get('llm_analysis', {})
+                efficiency_score = llm_analysis.get('efficiency_score', 0)
+
+                papers_with_scores.append({
+                    'arxiv_id': data.get('arxiv_id'),
+                    'title': data.get('title'),
+                    'efficiency_score': efficiency_score,
+                    'primary_category': data.get('primary_category'),
+                    'authors': data.get('authors', [])[:5],
+                    'arxiv_url': f"https://arxiv.org/abs/{data.get('arxiv_id')}",
+                    'summary': llm_analysis.get('summary', ''),
+                })
+            except Exception as e:
+                self.logger.error(f'Efficiency TOP5 읽기 실패: {json_file.name}, {e}')
+                continue
+
+        # 2. efficiency_score 기준 정렬 (내림차순)
+        papers_with_scores.sort(key=lambda x: x['efficiency_score'], reverse=True)
+
+        # 3. TOP5 선정 (점수가 0보다 큰 논문만)
+        top5 = []
+        for idx, paper in enumerate(papers_with_scores[:5], 1):
+            if paper['efficiency_score'] > 0:
+                paper['rank'] = idx
+                top5.append(paper)
+
+        # 4. efficiency_top5.json 저장
+        result = {
+            'date': date_str,
+            'generated_at': datetime.now().isoformat(),
+            'total_papers': len(papers_with_scores),
+            'top5': top5,
+        }
+
+        efficiency_file = completed_date_dir / 'efficiency_top5.json'
+        with open(efficiency_file, 'w', encoding='utf-8') as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+
+        self.logger.info(f'Efficiency TOP5 저장 완료: {len(top5)}개 ({date_str})')
+        return top5

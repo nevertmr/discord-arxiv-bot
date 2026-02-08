@@ -91,8 +91,18 @@ arXiv ID: {paper.full_id}
   "summary": "3-4문장으로 핵심 내용을 한국어로 요약",
   "methodology": "주요 기술이나 방법론을 한국어로 설명",
   "context": "연구 분야 및 트렌드를 한국어로 설명",
-  "contribution": "기대 효과 또는 기여점을 한국어로 설명"
+  "contribution": "기대 효과 또는 기여점을 한국어로 설명",
+  "efficiency_score": 0-10
 }}
+
+**efficiency_score 점수 기준 (LLM 메모리 절감 기법 - 대규모 재학습 없이 적용 가능한 기법):**
+- 0: LLM 메모리/효율성과 전혀 무관한 논문
+- 1-3: 효율성을 언급하지만 핵심 주제가 아님
+- 4-6: 메모리 절감 기법이 일부 포함됨
+- 7-9: 메모리 절감 기법이 핵심 주제인 논문
+- 10: 메모리 절감 전용 논문
+
+**해당 기법 예시:** PTQ(Post-Training Quantization), Pruning, KV-cache 최적화, Speculative Decoding, Flash Attention, Low-rank Adaptation, Sparsification, Weight Sharing, Knowledge Distillation(소규모) 등
 
 **다시 한번 강조: 모든 필드의 값은 반드시 한국어로 작성해야 합니다. 하지만 한국어로 설명이 어려운 영어단어나 영어단어가 메인으로 쓰이는 영어단어는 영어로 표기해도 됩니다.**
 모르는 내용은 추측하지 말고, 제공된 {content_note}에만 근거하여 작성하세요."""
